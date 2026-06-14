@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flame_forge2d/flame_forge2d.dart';
 
+import '../systems/match_resolver.dart';
 import '../theme/palette.dart';
 
 /// ピースの形状定義。
@@ -11,12 +12,17 @@ import '../theme/palette.dart';
 /// 複数の凸多角形（[polygons]）の合成として表現する。
 /// 座標はローカル（メートル）。原点はおおよそ重心。
 class PieceShape {
-  const PieceShape(this.id, this.polygons);
+  const PieceShape(this.id, this.polygons,
+      {this.connectors = const <Connector>[]});
 
   final String id;
 
   /// 凸多角形のリスト。各多角形は頂点（ローカル座標）のリスト。
   final List<List<Vector2>> polygons;
+
+  /// 噛み合い判定用のコネクタ（tab/pocket）。物理 fixture とは別管理の
+  /// メタデータで、持たない形状（square/bar/L）は空。
+  final List<Connector> connectors;
 }
 
 /// 形状ファクトリ。Vector2 が const にできないため都度生成する。
@@ -40,20 +46,35 @@ class PieceShapes {
       ]);
 
   /// 凸：上に矩形のタブを持つ正方形。notch とぴたり噛み合う。
+  /// y は負が上。タブ幅0.64・高さ0.55（= notch の切り欠きと同寸）。
   static PieceShape tab() => PieceShape('tab', <List<Vector2>>[
         _rect(0, 0, _u, _u),
-        // y は負が上。タブ幅0.64・高さ0.55。
         _rect(0, -_u - 0.275, 0.32, 0.275),
+      ], connectors: <Connector>[
+        // 出っ張りそのもの。法線は外（上＝-y）向き。
+        Connector(
+          type: ConnectorType.tab,
+          polygon: _rect(0, -_u - 0.275, 0.32, 0.275),
+          normal: Vector2(0, -1),
+        ),
       ]);
 
   /// 凹：上中央に矩形の切り欠きを持つ正方形（3つの凸に分解）。
+  /// 切り欠きは幅0.64・深さ0.55で、tab の出っ張りとぴたり一致する。
   static PieceShape notch() => PieceShape('notch', <List<Vector2>>[
         // 切り欠きより下の土台
         _rect(0, 0.275, _u, _u - 0.275),
-        // 切り欠き左の柱
-        _rect(-0.46, -0.275, 0.14, 0.275),
+        // 切り欠き左の柱（深さ0.55＝上端まで届く）
+        _rect(-0.46, -0.325, 0.14, 0.275),
         // 切り欠き右の柱
-        _rect(0.46, -0.275, 0.14, 0.275),
+        _rect(0.46, -0.325, 0.14, 0.275),
+      ], connectors: <Connector>[
+        // 空きスロット（ネガティブスペース）。開口は上（-y）向き。
+        Connector(
+          type: ConnectorType.pocket,
+          polygon: _rect(0, -0.325, 0.32, 0.275),
+          normal: Vector2(0, -1),
+        ),
       ]);
 
   /// 横長のバー。
@@ -101,6 +122,18 @@ class Piece extends BodyComponent {
   /// 生成からの経過時間（生成直後の誤判定を防ぐ）。
   double age = 0;
 
+  /// 噛み合いが成立して消滅中か。true の間フェードし、消えたら自分を除去する。
+  bool matched = false;
+
+  /// 消滅フェードの残り（1=不透明 → 0=消滅）。
+  double _fade = 1.0;
+
+  /// フェード速度（1/秒）。0.25秒で消える。
+  static const double _fadeRate = 4.0;
+
+  /// 噛み合い成立。フェードアウトを開始する（除去は [update] が行う）。
+  void dissolve() => matched = true;
+
   @override
   Body createBody() {
     final bodyDef = BodyDef(
@@ -128,11 +161,12 @@ class Piece extends BodyComponent {
   @override
   void render(Canvas canvas) {
     // renderTree がボディの位置・角度を適用済み。ローカル（m）で描く。
+    final alpha = matched ? _fade.clamp(0.0, 1.0) : 1.0;
     final fill = Paint()
-      ..color = fillColor
+      ..color = fillColor.withValues(alpha: alpha)
       ..style = PaintingStyle.fill;
     final stroke = Paint()
-      ..color = HamariPalette.aiDeep
+      ..color = HamariPalette.aiDeep.withValues(alpha: alpha)
       ..strokeWidth = 0.035
       ..style = PaintingStyle.stroke;
 
@@ -159,5 +193,11 @@ class Piece extends BodyComponent {
   void update(double dt) {
     super.update(dt);
     age += dt;
+    if (matched) {
+      _fade -= _fadeRate * dt;
+      if (_fade <= 0) {
+        removeFromParent(); // BodyComponent.onRemove がボディを破棄する。
+      }
+    }
   }
 }

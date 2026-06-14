@@ -8,11 +8,12 @@ import '../components/boundaries.dart';
 import '../components/input_layer.dart';
 import '../components/piece.dart';
 import '../components/spawn_controller.dart';
+import '../systems/match_resolver.dart';
 import '../theme/palette.dart';
 
-/// 嵌（Hamari）コア。落として・動かして・積み上げるところまで。
+/// 嵌（Hamari）コア。落として・動かして・積み上げ、噛み合えば消す。
 ///
-/// 噛み合い判定・消滅・スコア・ゲームオーバーは次パス。
+/// ネクスト表示UI・危険ライン・ゲームオーバーは次パス。
 class HamariGame extends Forge2DGame {
   HamariGame()
       : super(
@@ -41,6 +42,15 @@ class HamariGame extends Forge2DGame {
   /// 生成直後に固定判定しない猶予（秒）。
   static const double _minAgeToLock = 0.35;
 
+  /// 噛み合い判定のしきい値（ε はここで一括調整）。
+  static const MatchConfig _matchConfig = MatchConfig();
+
+  /// 近接ペア絞り込み距離（m）。これ以上離れたピースは判定対象外。
+  static const double _matchProximity = 2.4;
+
+  /// 1ペア消滅あたりの加点。
+  static const int _matchScore = 100;
+
   /// フィールド内寸（メートル）。原点(0,0)が左上、yは下向き。
   final Vector2 fieldSize = Vector2(7.2, 13.0);
 
@@ -48,6 +58,12 @@ class HamariGame extends Forge2DGame {
 
   /// 現在プレイヤーが操作中のピース。
   Piece? activePiece;
+
+  /// 着地して固定済みの（まだ消えていない）ピース。噛み合い判定の相手候補。
+  final List<Piece> lockedPieces = <Piece>[];
+
+  /// 累計スコア。HUD表示は次パス。
+  int score = 0;
 
   bool _spawning = false;
 
@@ -106,7 +122,48 @@ class HamariGame extends Forge2DGame {
     if (piece.restTimer >= _settleTime) {
       piece.controllable = false;
       activePiece = null;
+      _resolveMatches(piece);
     }
+  }
+
+  /// 着地ロックしたピースを、固定済みの隣接ピースと突き合わせて噛み合いを判定。
+  /// 成立すれば両者をフェード消滅させ加点する。不成立なら固定リストへ加える。
+  void _resolveMatches(Piece justLocked) {
+    if (justLocked.shape.connectors.isNotEmpty) {
+      for (final other in lockedPieces) {
+        if (other.matched || !other.isMounted) continue;
+        if (other.shape.connectors.isEmpty) continue;
+        // 無関係な遠方ペアを早期に除外。
+        if ((other.body.position - justLocked.body.position).length >
+            _matchProximity) {
+          continue;
+        }
+        if (_pairMatches(justLocked, other)) {
+          justLocked.dissolve();
+          other.dissolve();
+          lockedPieces.remove(other);
+          score += _matchScore;
+          return; // justLocked は消えるので固定リストに入れない。
+        }
+      }
+    }
+    lockedPieces.add(justLocked);
+  }
+
+  /// 2ピースの全コネクタ対を総当たりし、いずれかが噛み合えば true。
+  bool _pairMatches(Piece a, Piece b) {
+    for (final ca in a.shape.connectors) {
+      final wa = WorldConnector.from(ca,
+          position: a.body.position, angle: a.body.angle);
+      for (final cb in b.shape.connectors) {
+        final wb = WorldConnector.from(cb,
+            position: b.body.position, angle: b.body.angle);
+        if (MatchResolver.evaluate(wa, wb, config: _matchConfig).matched) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // ---- 入力（InputLayer から呼ばれる）----

@@ -1,6 +1,6 @@
 # ADR-001: 噛み合い判定（match_resolver）のアルゴリズム
 
-**Status:** Proposed
+**Status:** Accepted（実装済み: `lib/systems/match_resolver.dart`。実機での ε 調整は残課題）
 **Date:** 2026-06-14
 **Deciders:** tatsuya
 
