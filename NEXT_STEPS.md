@@ -26,7 +26,7 @@
 - ⚠️ **着手順4の追加分（match_resolver / 新テスト / piece・game の変更）は Flutter ツールチェーンの無い環境で書いたため `analyze`/`test` 未実行。別マシンで最初に `flutter test` を回して緑を確認すること。**
 
 **未実装（このあと）**
-- 着手順5: ネクスト表示UI・危険ライン・ゲームオーバー ← **次の作業**
+- 着手順5: ネクスト表示UI・危険ライン・ゲームオーバー ← **次の作業（実装プランは §3.5 に確定済み）**
 - 着手順6: タイトル／結果／設定の各画面 ＋ riverpod ＋ ハイスコア保存(shared_preferences)
 - 着手順7: デザインシステム適用・音(flame_audio)・触覚(HapticFeedback)
 - 着手順8: iOS提出準備（権限なし確認・App Privacy・レーティング・スクショ）
@@ -84,6 +84,62 @@ resource fork, Finder information, or similar detritus not allowed
 - tab の出っ張りと notch の切り欠きは **同寸（幅0.64×深さ0.55）** に揃えてあるので、ぴたり重なれば `fitError≈0`。notch の柱は深さ0.55へ更新済み（旧0.55スロット浅め→修正）。
 - コネクタは **物理fixtureとは別管理のメタデータ**。形状を変えたら両方更新が必要（二重管理）。
 - 消滅は `Piece.dissolve()` → 0.25秒フェード → `removeFromParent()`。**フェード中も当たり判定は残る**（forge2d 0.14 の active/enabled API差異を避けたため）。気になるなら後で sensor 化を検討。
+
+---
+
+## 3.5 着手順5 実装プラン（2026-06-14 セッションで決定・オフィスで着手）
+
+### オフィス初手（今回コミット分の検証）
+今回の着手順4分は Flutter ツールチェーン無し環境で書いたため未検証。**最初に必ず**：
+1. `flutter test`（特に `test/match_resolver_test.dart`）。
+   - もし `Vector2` の export で落ちたら → `match_resolver.dart` と同テストの import を
+     `package:flame/components.dart` → `package:flame_forge2d/flame_forge2d.dart` に差し替え（低リスク）。
+2. `flutter analyze`（軽微lint想定）。
+3. `flutter run` で tab+notch が実際に噛むか確認 → ε 調整へ。
+
+### 決定事項（このプランの前提）
+- **噛み合い補助 = ロック時30°スナップ**（着手順4の仕上げ・最優先）
+- **HUD = Flutter オーバーレイ**（`GameWidget(overlayBuilderMap:)`。着手順6の画面群で再利用）
+- **ゲームオーバー = 危険ライン超え**
+
+### 実装ステップ
+**A. ロック時30°スナップ（最優先・噛みやすさの要）**
+- `hamari_game.dart` の固定確定箇所（`piece.restTimer >= _settleTime`）で、`_resolveMatches` を
+  呼ぶ直前に角度を最寄り30°へ補正：
+  `p.body.setTransform(p.body.position, nearest30(p.body.angle))`。
+  → 物理で生じた微傾きを消し、法線が揃って ε が効くようにする。
+- `nearest30(rad) = (round(rad / (π/6)) * (π/6))`。
+
+**B. ゲーム状態（riverpod はまだ。最小の notifier で）**
+- `enum GamePhase { playing, gameOver }`。
+- HamariGame に `ValueNotifier<int> scoreVN` / `ValueNotifier<GamePhase> phaseVN` /
+  `ValueNotifier<PieceShape> nextVN`（`spawner.next` と同期）。
+- 既存 `score` は `scoreVN.value` に寄せる。
+
+**C. 危険ライン**
+- 定数 `dangerY`（上端から約1.8m）。固定時にピース最上点 or `body.position.y < dangerY` なら gameOver。
+- 描画：細い警告線（`HamariPalette.aiMid`→危険時に赤寄せ）。
+
+**D. ゲームオーバー処理**
+- `phaseVN.value = gameOver` で `_spawnNext` 停止、入力無効化（`_hasActive` に `phase==playing` を AND）。
+
+**E. Flutter オーバーレイ**
+- `GameWidget(overlayBuilderMap: { 'hud':..., 'gameOver':... })`。
+- HUD：左上スコア、右上ネクストのミニ描画（`CustomPaint` で `nextVN.value.polygons` を縮小描画）。
+- GameOver：最終スコア＋リトライボタン。`ValueListenableBuilder` で notifier 購読。
+
+**F. リトライ**
+- world から全 `Piece` 除去、`lockedPieces.clear()`、`scoreVN=0`、`phaseVN=playing`、
+  next 再抽選、`_spawnNext()`。
+
+### ε デバッグ計測（実機調整を速くする）
+- `kDebugMode` 時、固定のたびに最良ペアの `relativeError` / `posed` を HUD に一時表示。
+- tab+notch を10回「狙って」嵌め、誤差分布を見て ε を「意図一致の上・惜しい不一致の下」に置く。
+  傾きが残るなら先に `normalToleranceDegrees` を緩める。
+
+### 検証（着手順5 完了条件）
+`flutter test` 緑 → `flutter run` で：危険ライン到達でゲームオーバー／リトライ復帰／
+ネクスト表示／スコア加算／tab+notch 消滅、を確認。
 
 ---
 
